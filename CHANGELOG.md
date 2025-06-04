@@ -1,0 +1,1 @@
+2025-06-05: Established clean baseline for loudspeaker-dsp. Fixed compilation errors, passed linter checks, and verified 1s pink noise regression test. Updated metrics.json. Resource usage: 18245 LUTs, 62 BRAMs, 24 DSPs. Ready for further iteration.

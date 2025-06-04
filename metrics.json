@@ -1,0 +1,17 @@
+{
+  "date": "2025-06-05",
+  "gitSha": "6449f40f",
+  "features": ["simd4", "accRegFile", "multiRate", "hdrPath", "gainShare", "bankSwitch", "coeffLoader", "firPartition", "fastLimiter", "thermalModel", "brownout", "dualNetwork", "debug", "powerOpt", "assistCore", "asicBist", "otpCsrs", "polyphaseDelay", "pllDivider", "hwBreakpoint"],
+  "fpga": {
+    "device": "xc7a200t",
+    "fMax": "250 MHz",
+    "sliceLUTs": 18245,
+    "sliceRegs": 12477,
+    "bram18": 62,
+    "dsp": 24
+  },
+  "power": {
+    "dynamic": "1.35 W",
+    "static": "0.32 W"
+  }
+}

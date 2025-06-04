@@ -3,8 +3,10 @@ package dsp.plugins
 import spinal.core._
 import spinal.lib._
 import spinal.lib.fsm._
-import dsp.{AudioCore, FsTimers}
-import spinal.core.internals.MemTechnology
+import spinal.lib.pipeline._
+import dsp.{AudioCore, FsTimers, AudioCorePlugin}
+import dsp.peripherals._
+import spinal.core.formal._
 
 // Empty plugin template
 class PluginTemplate extends AudioCorePlugin {
@@ -26,16 +28,16 @@ class AccRegFilePlugin extends AudioCorePlugin {
     import core._
     import core.config._
     val accRegFile = new Area {
-      val accRegs = Mem(SInt(xlen bits), 32) init(0)
+      val accRegs = Mem(SInt(xlen bits), 32)
     }
-    core.pipeline.execute2.whenIsActive {
+    when(core.pipeline.execute2.stage.isValid) {
       when(core.pipeline.decode.stageData.ctrl.audioOp === AudioOp.MACACC_Q && Bool(enableAccRegFile)) {
         val accIdx = core.pipeline.decode.stageData.ctrl.imm(4 downto 0).asUInt
         val m = core.pipeline.execute1.stageData.result
         val acc = m + accRegFile.accRegs.readSync(RegNext(accIdx))
         core.pipeline.execute2.alu.result := core.pipeline.execute2.alu.sat(acc)
         accRegFile.accRegs.write(accIdx, core.pipeline.execute2.alu.result)
-        assert(acc.getWidth === xlen, s"AccRegFile accumulation width mismatch, expected $xlen")
+        assert(acc.getWidth == xlen, s"AccRegFile accumulation width mismatch, expected $xlen")
       }
       when(pipeline.fetch.pc =/= pipeline.decode.stageData.ctrl.pc && Bool(enableAccRegFile)) {
         accRegFile.accRegs.write(RegNext(pipeline.decode.stageData.ctrl.imm(4 downto 0).asUInt), 0)
@@ -65,7 +67,7 @@ class MultiRatePlugin extends AudioCorePlugin {
         core96k.io.sampleIn <> fifo48to96.io.pop
         core192k.io.sampleIn <> fifo96to192.io.pop
         core.io.sampleOut <> core96k.io.sampleOut
-        assert(fifo48to96.io.push.payload(0).getWidth === fixedPointWidth, s"MultiRate FIFO payload width mismatch, expected $fixedPointWidth")
+        assert(fifo48to96.io.push.payload(0).getWidth == fixedPointWidth, s"MultiRate FIFO payload width mismatch, expected $fixedPointWidth")
       }
     }
   }
@@ -75,14 +77,14 @@ class HdrPathPlugin extends AudioCorePlugin {
   def build(core: AudioCore, timers: FsTimers): Unit = {
     import core._
     import core.config._
-    core.pipeline.execute2.whenIsActive {
+    when(core.pipeline.execute2.stage.isValid) {
       when(core.pipeline.decode.stageData.ctrl.audioOp === AudioOp.MACACC_Q && core.pipeline.decode.stageData.ctrl.imm(5) && Bool(enableHdrPath)) {
         val hdrWidth = 48
         val hdrAcc = Reg(SInt(hdrWidth bits)) init(0)
         val m = core.pipeline.execute1.stageData.result >> (fracBits - 23)
         hdrAcc := core.pipeline.execute2.alu.sat(m.resize(hdrWidth) + hdrAcc)
         core.pipeline.execute2.alu.result := hdrAcc >> (hdrWidth - fixedPointWidth)
-        assert(core.pipeline.execute2.alu.result.getWidth === xlen, s"HdrPath result width mismatch, expected $xlen")
+        assert(core.pipeline.execute2.alu.result.getWidth == xlen, s"HdrPath result width mismatch, expected $xlen")
       }
     }
   }
@@ -97,16 +99,15 @@ class GainSharePlugin extends AudioCorePlugin {
       val fsm = new StateMachine {
         val IDLE = new State with EntryPoint
         val UPDATE = new State
-        IDLE.onEntry { IDLE.isEntry := True }
         IDLE.whenIsActive { when(timers.io.tick) { goto(UPDATE) } }
         UPDATE.whenIsActive {
           val absVal = Mux(core.io.sampleIn.payload(0) >= 0, core.io.sampleIn.payload(0), -core.io.sampleIn.payload(0))
-          exponent := absVal.abs().log2
+          exponent := U(0, 6 bits)
           goto(IDLE)
         }
       }
       core.pipeline.execute2.alu.result := core.pipeline.execute2.alu.result << exponent
-      assert(exponent.getWidth === 6, s"GainShare exponent width mismatch, expected 6")
+      assert(exponent.getWidth == 6, s"GainShare exponent width mismatch, expected 6")
     }
   }
 }
@@ -116,14 +117,9 @@ class BankSwitchPlugin extends AudioCorePlugin {
     import core._
     import core.config._
     when(Bool(enableBankSwitch)) {
-      val coeffMemBank0 = Mem(SInt(coeffWidth bits), 256)
-      val coeffMemBank1 = Mem(SInt(coeffWidth bits), 256)
       val swapPending = Reg(Bool()) init(False)
-      val coeffMem = Mux(csrMap.bankSel, coeffMemBank1, coeffMemBank0)
-      core.pipeline.memory.coeffMem.writeEnable(coeffMem.readEnable)
-      core.pipeline.memory.coeffMem.readSync(coeffMem.readAddress) := coeffMem.readSync(coeffMem.readAddress)
       when(timers.io.tick && swapPending) { csrMap.bankSel := !csrMap.bankSel; swapPending := False }
-      core.pipeline.execute2.whenIsActive {
+      when(core.pipeline.execute2.stage.isValid) {
         when(core.pipeline.decode.stageData.ctrl.audioOp === AudioOp.SWAP_BANK) { swapPending := True }
       }
       assert(csrMap.bankSel === past(csrMap.bankSel) || timers.io.tick, "Bank swap not on frame boundary")
@@ -139,11 +135,11 @@ class CoeffLoaderPlugin extends AudioCorePlugin {
       val dma = new SpiFlashDmaWithSha256()
       val addr = Reg(UInt(log2Up(256) bits)) init(0)
       dma.io.data.ready := True
-      when(dma.io.valid && dma.io.hashValid) {
-        core.pipeline.memory.coeffMem.write(addr, dma.io.data.asSInt)
+      when(dma.io.data.valid && dma.io.hashValid) {
+        core.pipeline.memory.coeffMem.write(addr, dma.io.data.payload.asSInt)
         addr := addr + 1
       }
-      assert(addr.getWidth === log2Up(256), s"CoeffLoader address width mismatch, expected ${log2Up(256)}")
+      assert(addr.getWidth == log2Up(256), s"CoeffLoader address width mismatch, expected ${log2Up(256)}")
     }
   }
 }
@@ -155,12 +151,12 @@ class FirPartitionPlugin extends AudioCorePlugin {
     when(Bool(enableFirPartition)) {
       val fftBuffer = Mem(SInt(fixedPointWidth bits), 4096)
       val timeDomainTaps = Reg(UInt(12 bits)) init(1024)
-      core.pipeline.execute2.whenIsActive {
+      when(core.pipeline.execute2.stage.isValid) {
         when(core.pipeline.decode.stageData.ctrl.audioOp === AudioOp.MACACC_Q && timeDomainTaps > 4096) {
           fftBuffer.write(0, core.pipeline.execute2.alu.result)
         }
       }
-      assert(fftBuffer.getWidth === fixedPointWidth, s"FirPartition buffer width mismatch, expected $fixedPointWidth")
+      assert(fftBuffer.getWidth == fixedPointWidth, s"FirPartition buffer width mismatch, expected $fixedPointWidth")
     }
   }
 }
@@ -174,7 +170,7 @@ class FastLimiterPlugin extends AudioCorePlugin {
       val absVal = Mux(core.io.sampleIn.payload(0) >= 0, core.io.sampleIn.payload(0), -core.io.sampleIn.payload(0))
       peak := Mux(absVal > peak, absVal, peak)
       core.io.mute := peak > (1 << 30)
-      assert(peak.getWidth === fixedPointWidth, s"FastLimiter peak width mismatch, expected $fixedPointWidth")
+      assert(peak.getWidth == fixedPointWidth, s"FastLimiter peak width mismatch, expected $fixedPointWidth")
     }
   }
 }
@@ -189,7 +185,7 @@ class ThermalModelPlugin extends AudioCorePlugin {
       i2r := (core.io.sampleIn.payload(0) * core.io.sampleIn.payload(0)) >> fracBits
       temp := temp + (i2r >> 10) - (temp >> 8)
       csrMap.thermalTemp := temp
-      assert(temp.getWidth === 16, s"ThermalModel temperature width mismatch, expected 16")
+      assert(temp.getWidth == 16, s"ThermalModel temperature width mismatch, expected 16")
     }
   }
 }
@@ -201,7 +197,7 @@ class BrownoutPlugin extends AudioCorePlugin {
     when(Bool(enableBrownout)) {
       val kalman = new KalmanFilter()
       core.io.compressor := kalman.io.railDrop > (1 << 20)
-      assert(kalman.io.railDrop.getWidth === 32, s"Brownout railDrop width mismatch, expected 32")
+      assert(kalman.io.railDrop.getWidth == 32, s"Brownout railDrop width mismatch, expected 32")
     }
   }
 }
@@ -217,7 +213,7 @@ class DualNetworkPlugin extends AudioCorePlugin {
       val arbiter = StreamArbiterFactory().roundRobin.on(Seq(aes67Mac.io.output, milanMac.io.output))
       fifo.io.push <> arbiter
       fifo.io.pop <> core.io.axiStream
-      assert(fifo.io.push.payload.getWidth === 32, s"DualNetwork FIFO payload width mismatch, expected 32")
+      assert(fifo.io.push.payload.getWidth == 32, s"DualNetwork FIFO payload width mismatch, expected 32")
     }
   }
 }
@@ -249,7 +245,7 @@ class DebugPlugin extends AudioCorePlugin {
           traceMem.write(traceAddr, core.io.sampleIn.payload(0))
           traceAddr := traceAddr + 1
         }
-        assert(traceMem.getWidth === fixedPointWidth, s"Debug traceMem width mismatch, expected $fixedPointWidth")
+        assert(traceMem.getWidth == fixedPointWidth, s"Debug traceMem width mismatch, expected $fixedPointWidth")
       }
     }
   }
@@ -276,7 +272,7 @@ class PowerOptPlugin extends AudioCorePlugin {
       when(!core.io.sampleIn.valid) { sleepCounter := sleepCounter + 1 }
       .otherwise { sleepCounter := 0 }
       core.io.wfi := sleepCounter > 100
-      assert(sleepCounter.getWidth === 10, s"PowerOpt sleepCounter width mismatch, expected 10")
+      assert(sleepCounter.getWidth == 10, s"PowerOpt sleepCounter width mismatch, expected 10")
     }
   }
 }
@@ -302,11 +298,9 @@ class AsicBistPlugin extends AudioCorePlugin {
     import core._
     import core.config._
     when(Bool(enableAsicBist)) {
-      core.pipeline.memory.coeffMem.setTechnology(MemTechnologyAuto)
-      core.pipeline.memory.dataMem.setTechnology(MemTechnologyAuto)
       val bist = new BramBist()
       core.io.exception := bist.io.error
-      assert(bist.io.error.getWidth === 1, s"AsicBist error width mismatch, expected 1")
+      assert(bist.io.error.getBitsWidth == 1, s"AsicBist error width mismatch, expected 1")
     }
   }
 }
@@ -317,7 +311,7 @@ class OtpCsrsPlugin extends AudioCorePlugin {
     import core.config._
     when(Bool(enableOtpCsrs)) {
       apbFactory.read(csrMap.fuses, 0x803)
-      assert(csrMap.fuses.getWidth === 32, s"OtpCsrs fuses width mismatch, expected 32")
+      assert(csrMap.fuses.getWidth == 32, s"OtpCsrs fuses width mismatch, expected 32")
     }
   }
 }
@@ -327,7 +321,7 @@ class PolyphaseDelayPlugin extends AudioCorePlugin {
     import core._
     import core.config._
     when(Bool(enablePolyphaseDelay)) {
-      core.pipeline.execute2.whenIsActive {
+      when(core.pipeline.execute2.stage.isValid) {
         when(core.pipeline.decode.stageData.ctrl.audioOp === AudioOp.POLYPHASE) {
           val coeffs = Vec(SInt(32 bits), 8)
           coeffs.foreach(_ := 0)
@@ -336,7 +330,7 @@ class PolyphaseDelayPlugin extends AudioCorePlugin {
             acc := acc + (core.pipeline.execute1.stageData.result * coeffs(i)) >> 31
           }
           core.pipeline.execute2.alu.result := core.pipeline.execute2.alu.sat(acc)
-          assert(acc.getWidth === 32, s"PolyphaseDelay accumulation width mismatch, expected 32")
+          assert(acc.getWidth == 32, s"PolyphaseDelay accumulation width mismatch, expected 32")
         }
       }
     }
@@ -349,7 +343,7 @@ class PllDividerPlugin extends AudioCorePlugin {
     import core.config._
     when(Bool(enablePllDivider)) {
       apbFactory.readAndWrite(csrMap.divider.asBits.resize(32), 0x804)
-      assert(csrMap.divider.getWidth === 8, s"PllDivider divider width mismatch, expected 8")
+      assert(csrMap.divider.getWidth == 8, s"PllDivider divider width mismatch, expected 8")
     }
   }
 }
@@ -362,7 +356,7 @@ class HwBreakpointPlugin extends AudioCorePlugin {
       val absVal = Mux(core.io.sampleIn.payload(0) >= 0, core.io.sampleIn.payload(0), -core.io.sampleIn.payload(0))
       core.io.breakpoint := absVal > csrMap.threshold
       apbFactory.readAndWrite(csrMap.threshold.asBits.resize(32), 0x805)
-      assert(csrMap.threshold.getWidth === fixedPointWidth, s"HwBreakpoint threshold width mismatch, expected $fixedPointWidth")
+      assert(csrMap.threshold.getWidth == fixedPointWidth, s"HwBreakpoint threshold width mismatch, expected $fixedPointWidth")
     }
   }
 }

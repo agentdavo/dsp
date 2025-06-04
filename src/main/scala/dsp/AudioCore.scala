@@ -56,7 +56,7 @@ class FsTimers(fs1: Int, fs2: Int) extends Component {
   val counter = Reg(UInt(32 bits)) init(0)
   io.tick := counter === 0
   counter := counter + 1
-  assert(counter.getWidth === 32, s"FsTimers counter width mismatch, expected 32")
+  assert(counter.getWidth == 32, s"FsTimers counter width mismatch, expected 32")
 }
 
 // Main CPU core
@@ -71,6 +71,9 @@ class AudioCore(val config: AudioCoreConfig) extends Component {
   val audio192k = if (enableMultiRate) ClockDomain.external("audio192k") else systemClock
   val alwaysOnDomain = if (enableAssistCore || enableDebug) ClockDomain.external("alwaysOn") else systemClock
   val macClock = if (simdLanes <= 2) systemClock else ClockDomain.external("macClk")
+
+  // Constant table for fractional formats
+  private val qFormatVec = Vec(qFormats.map(q => U(q, 6 bits)))
 
   // Instruction types
   object InstrType extends SpinalEnum {
@@ -96,7 +99,7 @@ class AudioCore(val config: AudioCoreConfig) extends Component {
     val isValid = Bool()
   }
 
-  case class StageData() extends Bundle with Stageable {
+  case class StageData() extends Bundle {
     val ctrl = InstrCtrl()
     val rs1Data, rs2Data = SInt(xlen bits)
     val result = SInt(xlen bits)
@@ -141,7 +144,7 @@ class AudioCore(val config: AudioCoreConfig) extends Component {
   }
 
   // Pipeline
-  val pipeline = new Pipeline {
+  lazy val pipeline = new Pipeline {
     val stages = Array.fill(pipelineStages)(new Stage())
     val STAGE_DATA = Stageable(StageData())
     val fetch = new Area {
@@ -237,10 +240,10 @@ class AudioCore(val config: AudioCoreConfig) extends Component {
             val cycle = Reg(Bool()) init(False)
             cycle := !cycle
             when(cycle) {
-              preResult := (stageData.rs1Data * stageData.rs2Data) >> qFormats(stageData.ctrl.imm(7 downto 4).asUInt)
+              preResult := (stageData.rs1Data * stageData.rs2Data) >> qFormatVec(stageData.ctrl.imm(7 downto 4).asUInt)
             }
           } else {
-            preResult := (stageData.rs1Data * stageData.rs2Data) >> qFormats(stageData.ctrl.imm(7 downto 4).asUInt)
+            preResult := (stageData.rs1Data * stageData.rs2Data) >> qFormatVec(stageData.ctrl.imm(7 downto 4).asUInt)
           }
         }
         is(AudioOp.VADD_Q, AudioOp.VSUB_Q, AudioOp.VABS_Q, AudioOp.VMAX_Q) {
@@ -249,14 +252,14 @@ class AudioCore(val config: AudioCoreConfig) extends Component {
           val res = Vec(SInt(laneWidth bits), lanes)
           for (i <- 0 until lanes) {
             assert((i + 1) * laneWidth - 1 < xlen, s"SIMD array index overflow at lane $i")
-            val a = stageData.rs1Data((i + 1) * laneWidth - 1 downto i * laneWidth).asSInt
-            val b = stageData.rs2Data((i + 1) * laneWidth - 1 downto i * laneWidth).asSInt
-            res(i) := stageData.ctrl.audioOp match {
-              case AudioOp.VADD_Q => a + b
-              case AudioOp.VSUB_Q => a - b
-              case AudioOp.VABS_Q => a.abs()
-              case AudioOp.VMAX_Q => Mux(a > b, a, b)
-              case _ => S(0, laneWidth bits)
+            val a = stageData.rs1Data.asBits((i + 1) * laneWidth - 1 downto i * laneWidth).asSInt
+            val b = stageData.rs2Data.asBits((i + 1) * laneWidth - 1 downto i * laneWidth).asSInt
+            switch(stageData.ctrl.audioOp) {
+              is(AudioOp.VADD_Q) { res(i) := a + b }
+              is(AudioOp.VSUB_Q) { res(i) := a - b }
+              is(AudioOp.VABS_Q) { res(i) := a.abs.asSInt }
+              is(AudioOp.VMAX_Q) { res(i) := Mux(a > b, a, b) }
+              default { res(i) := S(0, laneWidth bits) }
             }
           }
           preResult := res.asBits.asSInt
@@ -278,9 +281,9 @@ class AudioCore(val config: AudioCoreConfig) extends Component {
         def sat(value: SInt): SInt = {
           val out = SInt(xlen bits)
           when(value > maxVal) { out := maxVal }
-          .elseWhen(value < minVal) { out := minVal }
+          .elsewhen(value < minVal) { out := minVal }
           .otherwise { out := value }
-          assert(out.getWidth === xlen, s"Saturation output width mismatch, expected $xlen")
+          assert(out.getWidth == xlen, s"Saturation output width mismatch, expected $xlen")
           out
         }
 
@@ -292,25 +295,25 @@ class AudioCore(val config: AudioCoreConfig) extends Component {
               is(AudioOp.ADD_Q) { result := sat(stageData.rs1Data + stageData.rs2Data) }
               is(AudioOp.SUB_Q) { result := sat(stageData.rs1Data - stageData.rs2Data) }
               is(AudioOp.SAT_Q) { result := sat(stageData.rs1Data) }
-              is(AudioOp.SHL_Q) { result := sat(stageData.rs1Data << stageData.rs2Data(5 downto 0)) }
-              is(AudioOp.SHR_Q) { result := sat(stageData.rs1Data >> stageData.rs2Data(5 downto 0)) }
+              is(AudioOp.SHL_Q) { result := sat(stageData.rs1Data << stageData.rs2Data(5 downto 0).asUInt) }
+              is(AudioOp.SHR_Q) { result := sat(stageData.rs1Data >> stageData.rs2Data(5 downto 0).asUInt) }
               is(AudioOp.MACACC_Q) {
                 val acc = stageData.result + accReg
                 result := sat(acc)
                 accReg := result
                 csrMap.accRegCsr := result
-                assert(acc.getWidth === xlen, s"MACACC accumulation value mismatch, expected $xlen")
+                assert(acc.getWidth == xlen, s"MACACC accumulation value mismatch, expected $xlen")
               }
               is(AudioOp.VADD_Q, AudioOp.VSUB_Q, AudioOp.VABS_Q, AudioOp.VMAX_Q) {
                 val lanes = simdLanes
                 val laneWidth = xlen / lanes
                 val res = Vec(SInt(laneWidth bits), lanes)
                 for (i <- 0 until lanes) {
-                  res(i) := sat(stageData.result((i + 1) * laneWidth - 1 downto i * laneWidth).asSInt)
+                  res(i) := sat(stageData.result.asBits((i + 1) * laneWidth - 1 downto i * laneWidth).asSInt)
                 }
                 result := res.asBits.asSInt
               }
-              is(AudioOp.LD_COEFF) { result := coeffMem.readSync(RegNext(stageData.ctrl.imm.asUInt)).resize(xlen) }
+              is(AudioOp.LD_COEFF) { result := memory.coeffMem.readSync(RegNext(stageData.ctrl.imm.asUInt)).resize(xlen) }
               is(AudioOp.POLYPHASE) {
                 val coeffs = Vec(SInt(32 bits), 8)
                 coeffs.foreach(_ := 0)
@@ -319,7 +322,7 @@ class AudioCore(val config: AudioCoreConfig) extends Component {
                   acc := acc + (stageData.rs1Data * coeffs(i)) >> 31
                 }
                 result := sat(acc)
-                assert(acc.getWidth === 32, s"Polyphase accumulation value mismatch, expected 32")
+                assert(acc.getWidth == 32, s"Polyphase accumulation value mismatch, expected 32")
               }
             }
           }
@@ -370,7 +373,7 @@ class AudioCore(val config: AudioCoreConfig) extends Component {
       }
     }
 
-    stages(0) >> stages(1) >> stages(2) >> stages(3) >> stages(4) >> stages(5)
+    // Implicit stage connections handled by pipeline
   }
 
   // Hazard detection
