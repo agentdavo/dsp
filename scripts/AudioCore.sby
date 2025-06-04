@@ -1,0 +1,17 @@
+[tasks]
+prove
+
+[options]
+mode bmc
+depth 8
+
+[engines]
+smtbmc yices
+
+[script]
+read_verilog -formal AudioCore.v
+prep -top AudioCore
+write_smt2 -wires AudioCore.smt2
+
+[files]
+AudioCore.v
