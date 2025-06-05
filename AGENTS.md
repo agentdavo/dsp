@@ -125,7 +125,6 @@ Ensure strict compliance with SpinalHDL 1.9.5 conventions to avoid compilation e
 
 ## Pull-Request Workflow
 1. **Branch**: Create a feature branch: `git checkout -b dev/<feature>`.
-2. **Patch Size**: Limit changes to <400 lines or 1 new file. Escalate larger changes.
 3. **Compile**: Run `sbt clean` and `sbt test:compile`. Fix all errors before proceeding.
 4. **Test**: Run `sbt test` to pass `PinkNoiseEnd2End`.
 5. **Formal**: Run `scripts/prove.sh` to pass SymbiYosys depth-8.
@@ -205,7 +204,6 @@ Escalate to humans for:
 - New plugins requiring >3k LUTs (e.g., SHA-256 core).
 
 ## Example "Good Patch" Checklist
-- Adds ≤400 lines or 1 new file.
 - Passes `sbt test:compile` with `-Xfatal-warnings`.
 - No `???` or `TODO` in RTL (use comments for TODOs).
 - New logic in a plugin with at least one `assert`.
