@@ -13,30 +13,31 @@ ThisBuild / scalacOptions ++= Seq(
   "-Ymacro-annotations"
 )
 
-/* ─────────────────────────  DEPENDENCIES  ─────────────────────────────── */
+/* ─────────────────────────  DEPENDENCIES ─────────────────────────────── */
 val spinalVersion = "1.12.0"
 val spinalCore = "com.github.spinalhdl" %% "spinalhdl-core" % spinalVersion
 val spinalLib = "com.github.spinalhdl" %% "spinalhdl-lib" % spinalVersion
 val spinalIdslPlugin = compilerPlugin("com.github.spinalhdl" %% "spinalhdl-idsl-plugin" % spinalVersion)
 
-libraryDependencies ++= Seq(spinalCore, spinalLib, spinalIdslPlugin)
+libraryDependencies ++= Seq(
+  spinalCore,
+  spinalLib,
+  spinalIdslPlugin,
+  "org.scalatest" %% "scalatest" % "3.2.18" % Test // Add ScalaTest for PinkNoiseEnd2End
+)
 
-/* ─────────────────────────  SOURCE LAYOUT EXTENSIONS  ─────────────────── */
-/* add `src/formal/scala` to the main compilation pass so that
- * `AudioCoreFormal.scala` can reach package‐private RTL.
- */
+/* ─────────────────────────  SOURCE LAYOUT EXTENSIONS ─────────────────── */
+/* Include src/formal/scala for AudioCoreFormal.scala */
 Compile / unmanagedSourceDirectories +=
   (Compile / sourceDirectory).value / "formal" / "scala"
 
-/* ─────────────────────────  SPINAL/VERILOG SHORTCUTS  ─────────────────── */
+/* ─────────────────────────  SPINAL/VERILOG SHORTCUTS ─────────────────── */
 lazy val root = (project in file("."))
   .settings(
     name := "LoudspeakerDSP",
-
-    /* Run `sbt runMain dsp.LoudspeakerDspVerilog` to emit Verilog. */
-    Compile / run / fork := true
+    Compile / run / fork := true // Fork for Verilog generation
   )
 
-/* ─────────────────────────  TEST CONFIG  ──────────────────────────────── */
-Test / fork := true                       // isolate JVM for SpinalSim
-Test / javaOptions += "-Xmx2G"
+/* ─────────────────────────  TEST CONFIG ──────────────────────────────── */
+Test / fork := true // Isolate JVM for SpinalSim
+Test / javaOptions += "-Xmx4G" // Increase memory for Verilator simulation

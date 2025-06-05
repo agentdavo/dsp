@@ -58,15 +58,25 @@ class MultiRatePlugin extends AudioCorePlugin {
         val fifo48to96 = StreamFifoCC(Vec(SInt(fixedPointWidth bits), channels), 128, audio48k, audio96k)
         val fifo96to192 = StreamFifoCC(Vec(SInt(fixedPointWidth bits), channels), 128, audio96k, audio192k)
         val halfBandFilter = new HalfBandFir(12)
-        // TODO: Extend halfBandFilter to process all channels, currently mono
-        fifo48to96.io.push.payload := Vec(Seq.fill(channels)(halfBandFilter.io.output))
+
+        // Drive core48k, core96k, core192k inputs
+        core48k.io.sampleIn.valid := core.io.sampleIn.valid
+        core48k.io.sampleIn.payload := core.io.sampleIn.payload
+        core.io.sampleIn.ready := core48k.io.sampleIn.ready
+
         fifo48to96.io.push.valid := core.io.sampleIn.valid
+        fifo48to96.io.push.payload := Vec(Seq.fill(channels)(halfBandFilter.io.output))
         halfBandFilter.io.input := core.io.sampleIn.payload(0)
-        fifo96to192.io.push <> fifo48to96.io.pop
-        core48k.io.sampleIn <> core.io.sampleIn
+
         core96k.io.sampleIn <> fifo48to96.io.pop
         core192k.io.sampleIn <> fifo96to192.io.pop
-        core.io.sampleOut <> core96k.io.sampleOut
+        fifo96to192.io.push <> fifo48to96.io.pop
+
+        // Drive core output from core96k
+        core.io.sampleOut.valid := core96k.io.sampleOut.valid
+        core.io.sampleOut.payload := core96k.io.sampleOut.payload
+        core96k.io.sampleOut.ready := core.io.sampleOut.ready
+
         assert(fifo48to96.io.push.payload(0).getWidth == fixedPointWidth, s"MultiRate FIFO payload width mismatch, expected $fixedPointWidth")
       }
     }
@@ -212,7 +222,9 @@ class DualNetworkPlugin extends AudioCorePlugin {
       val fifo = StreamFifoCC(Bits(32 bits), 128, ClockDomain.external("macClk"), systemClock)
       val arbiter = StreamArbiterFactory().roundRobin.on(Seq(aes67Mac.io.output, milanMac.io.output))
       fifo.io.push <> arbiter
-      fifo.io.pop <> core.io.axiStream
+      core.io.axiStream.valid := fifo.io.pop.valid
+      core.io.axiStream.payload := fifo.io.pop.payload
+      fifo.io.pop.ready := core.io.axiStream.ready
       assert(fifo.io.push.payload.getWidth == 32, s"DualNetwork FIFO payload width mismatch, expected 32")
     }
   }

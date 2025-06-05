@@ -269,97 +269,107 @@ class AudioCore(val config: AudioCoreConfig) extends Component {
       stage(STAGE_DATA) := stageData
     }
 
-    val execute2 = new Area {
-      val stage = stages(3)
-      val stageData = stage(STAGE_DATA)
-      val accReg = Reg(SInt(xlen bits)) init(0)
-      val alu = new Area {
-        val result = SInt(xlen bits)
-        val maxVal = S((1L << (fixedPointWidth - 1)) - 1, fixedPointWidth bits)
-        val minVal = S(-(1L << (fixedPointWidth - 1)), fixedPointWidth bits)
+// execute2 area
+val execute2 = new Area {
+  val stage = stages(3)
+  val stageData = stage(STAGE_DATA)
+  val accReg = Reg(SInt(xlen bits)) init(0)
+  val alu = new Area {
+    val result = Reg(SInt(xlen bits)) init(0)
+    val maxVal = S((1L << (fixedPointWidth - 1)) - 1, fixedPointWidth bits)
+    val minVal = S(-(1L << (fixedPointWidth - 1)), fixedPointWidth bits)
 
-        def sat(value: SInt): SInt = {
-          val out = SInt(xlen bits)
-          when(value > maxVal) { out := maxVal }
-          .elsewhen(value < minVal) { out := minVal }
-          .otherwise { out := value }
-          assert(out.getWidth == xlen, s"Saturation output width mismatch, expected $xlen")
-          out
-        }
+    def sat(value: SInt): SInt = {
+      val out = SInt(xlen bits)
+      when(value > maxVal) { out := maxVal }
+      .elsewhen(value < minVal) { out := minVal }
+      .otherwise { out := value }
+      assert(out.getWidth == xlen, s"Saturation output width mismatch, expected $xlen")
+      out
+    }
 
-        result := stageData.result
-        switch(stageData.ctrl.instrType) {
-          is(InstrType.AUDIO) {
-            switch(stageData.ctrl.audioOp) {
-              is(AudioOp.MUL_Q, AudioOp.MAC_Q) { result := sat(stageData.result) }
-              is(AudioOp.ADD_Q) { result := sat(stageData.rs1Data + stageData.rs2Data) }
-              is(AudioOp.SUB_Q) { result := sat(stageData.rs1Data - stageData.rs2Data) }
-              is(AudioOp.SAT_Q) { result := sat(stageData.rs1Data) }
-              is(AudioOp.SHL_Q) { result := sat(stageData.rs1Data << stageData.rs2Data(5 downto 0).asUInt) }
-              is(AudioOp.SHR_Q) { result := sat(stageData.rs1Data >> stageData.rs2Data(5 downto 0).asUInt) }
-              is(AudioOp.MACACC_Q) {
-                val acc = stageData.result + accReg
-                result := sat(acc)
-                accReg := result
-                csrMap.accRegCsr := result
-                assert(acc.getWidth == xlen, s"MACACC accumulation value mismatch, expected $xlen")
-              }
-              is(AudioOp.VADD_Q, AudioOp.VSUB_Q, AudioOp.VABS_Q, AudioOp.VMAX_Q) {
-                val lanes = simdLanes
-                val laneWidth = xlen / lanes
-                val res = Vec(SInt(laneWidth bits), lanes)
-                for (i <- 0 until lanes) {
-                  res(i) := sat(stageData.result.asBits((i + 1) * laneWidth - 1 downto i * laneWidth).asSInt)
-                }
-                result := res.asBits.asSInt
-              }
-              is(AudioOp.LD_COEFF) { result := memory.coeffMem.readSync(RegNext(stageData.ctrl.imm.asUInt)).resize(xlen) }
-              is(AudioOp.POLYPHASE) {
-                val coeffs = Vec(SInt(32 bits), 8)
-                coeffs.foreach(_ := 0)
-                val acc = Reg(SInt(32 bits)) init(0)
-                for (i <- 0 until 8) {
-                  acc := acc + (stageData.rs1Data * coeffs(i)) >> 31
-                }
-                result := sat(acc)
-                assert(acc.getWidth == 32, s"Polyphase accumulation value mismatch, expected 32")
-              }
+    when(stageData.ctrl.isValid) {
+      switch(stageData.ctrl.instrType) {
+        is(InstrType.AUDIO) {
+          switch(stageData.ctrl.audioOp) {
+            is(AudioOp.MUL_Q, AudioOp.MAC_Q) { result := sat(stageData.result) }
+            is(AudioOp.ADD_Q) { result := sat(stageData.rs1Data + stageData.rs2Data) }
+            is(AudioOp.SUB_Q) { result := sat(stageData.rs1Data - stageData.rs2Data) }
+            is(AudioOp.SAT_Q) { result := sat(stageData.rs1Data) }
+            is(AudioOp.SHL_Q) { result := sat(stageData.rs1Data << stageData.rs2Data(5 downto 0).asUInt) }
+            is(AudioOp.SHR_Q) { result := sat(stageData.rs1Data >> stageData.rs2Data(5 downto 0).asUInt) }
+            is(AudioOp.MACACC_Q) {
+              val acc = stageData.result + accReg
+              result := sat(acc)
+              accReg := result
+              csrMap.accRegCsr := result
+              assert(acc.getWidth == xlen, s"MACACC accumulation value mismatch, expected $xlen")
             }
+            is(AudioOp.VADD_Q, AudioOp.VSUB_Q, AudioOp.VABS_Q, AudioOp.VMAX_Q) {
+              val lanes = simdLanes
+              val laneWidth = xlen / lanes
+              val res = Vec(SInt(laneWidth bits), lanes)
+              for (i <- 0 until lanes) {
+                res(i) := sat(stageData.result((i + 1) * laneWidth - 1 downto i * laneWidth))
+              }
+              result := res.asBits.asSInt
+            }
+            is(AudioOp.POLYPHASE) {
+              val coeffs = Vec(SInt(32 bits), 8)
+              coeffs.foreach(_ := 0)
+              val acc = Reg(SInt(32 bits)) init(0)
+              for (i <- 0 until 8) {
+                acc := acc + (stageData.rs1Data * coeffs(i)) >> 31
+              }
+              result := sat(acc)
+              assert(acc.getWidth == 32, s"Polyphase accumulation value mismatch, expected 32")
+            }
+            default { result := stageData.result }
           }
-          is(InstrType.I) { result := stageData.rs1Data + stageData.ctrl.imm }
         }
-        stageData.result := result
+        is(InstrType.I) { result := stageData.rs1Data + stageData.ctrl.imm }
+        default { result := stageData.result }
       }
-      stage(STAGE_DATA) := stageData
+    } otherwise {
+      result := stageData.result
     }
 
-    val memory = new Area {
-      val stage = stages(4)
-      val stageData = stage(STAGE_DATA)
-      val dataMem = Mem(SInt(xlen bits), memDepth)
-      val coeffMem = Mem(SInt(coeffWidth bits), 256)
-      val cag = new Area {
-        val circCtrl = CircCtrl()
-        val idxReg = Reg(UInt(log2Up(memDepth) bits)) init(0)
-        circCtrl.base := stageData.ctrl.imm.asUInt
-        circCtrl.len := stageData.rs2Data.asUInt
-        circCtrl.idx := idxReg
-        val addr = circCtrl.base + circCtrl.idx
-        when(stageData.ctrl.audioOp === AudioOp.CIRC_LD) {
-          stageData.result := dataMem.readSync(RegNext(addr))
-          idxReg := (idxReg + 1) % circCtrl.len
-          assert(idxReg < circCtrl.len, s"CAG index value exceeds length, idx=$idxReg, len=$circCtrl.len")
-        }
-        when(stageData.ctrl.audioOp === AudioOp.CIRC_ST) {
-          dataMem.write(addr, stageData.rs2Data)
-          idxReg := (idxReg + 1) % circCtrl.len
-        }
-      }
-      when(stageData.ctrl.instrType === InstrType.S) {
-        dataMem.write(RegNext(stageData.ctrl.imm.asUInt), stageData.rs2Data)
-      }
-      stage(STAGE_DATA) := stageData
+    stageData.result := result
+  }
+  stage(STAGE_DATA) := stageData
+}
+
+// memory area (updated to include LD_COEFF)
+val memory = new Area {
+  val stage = stages(4)
+  val stageData = stage(STAGE_DATA)
+  val dataMem = Mem(SInt(xlen bits), memDepth)
+  val coeffMem = Mem(SInt(coeffWidth bits), 256)
+  val cag = new Area {
+    val circCtrl = CircCtrl()
+    val idxReg = Reg(UInt(log2Up(memDepth) bits)) init(0)
+    circCtrl.base := stageData.ctrl.imm.asUInt
+    circCtrl.len := stageData.rs2Data.asUInt
+    circCtrl.idx := idxReg
+    val addr = circCtrl.base + circCtrl.idx
+    when(stageData.ctrl.audioOp === AudioOp.CIRC_LD) {
+      stageData.result := dataMem.readSync(RegNext(addr))
+      idxReg := (idxReg + 1) % circCtrl.len
+      assert(idxReg < circCtrl.len, s"CAG index value exceeds length, idx=$idxReg, len=$circCtrl.len")
     }
+    when(stageData.ctrl.audioOp === AudioOp.CIRC_ST) {
+      dataMem.write(addr, stageData.rs2Data)
+      idxReg := (idxReg + 1) % circCtrl.len
+    }
+  }
+  when(stageData.ctrl.audioOp === AudioOp.LD_COEFF) {
+    stageData.result := coeffMem.readSync(RegNext(stageData.ctrl.imm.asUInt)).resize(xlen)
+  }
+  when(stageData.ctrl.instrType === InstrType.S) {
+    dataMem.write(RegNext(stageData.ctrl.imm.asUInt), stageData.rs2Data)
+  }
+  stage(STAGE_DATA) := stageData
+}
 
     val writeback = new Area {
       val stage = stages(5)
